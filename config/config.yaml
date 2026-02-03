@@ -1,0 +1,63 @@
+seed: 42
+
+dataset:
+  name_or_path: "liamdugan/raid"
+  split_train: "train"
+  split_val: ""
+  split_test: "test"
+  text_column: "generation"
+  label_column: "label"
+  label_from_column: "model"
+  positive_values: ["chatgpt", "gpt4", "gpt3", "gpt2", "llama-chat", "mistral", "mistral-chat", "mpt", "mpt-chat", "cohere", "cohere-chat"]
+  negative_values: ["human"]
+  max_length: 512
+  include_adversarial: true
+  val_from_train: true
+  val_fraction: 0.1
+  val_seed: 42
+  load_test: false
+  max_rows: 200000
+
+model:
+  pretrained_name: "microsoft/deberta-v3-large"
+  num_labels: 2
+
+training:
+  output_dir: "outputs"
+  device: "auto"
+  batch_size: 8
+  num_epochs: 2
+  learning_rate: 1.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  grad_clip_norm: 1.0
+  eval_every_steps: 200
+  val_max_batches: 200
+
+mining:
+  enabled: true
+  start_epoch: 2
+  mine_every_epochs: 1
+  hard_negative_top_fraction: 0.1
+  hard_negative_weight: 3.0
+
+inference:
+  model_path: "outputs/best_model"
+  batch_size: 8
+  max_length: 512
+  threshold_path: null
+
+tuning:
+  enabled: false
+  strategy: "grid"
+  max_trials: 16
+  metric: "f1"
+  direction: "maximize"
+  output_dir: "outputs/tuning"
+  seed: 42
+  params:
+    training.learning_rate: [5.0e-6, 1.0e-5, 2.0e-5]
+    training.batch_size: [4, 8]
+    training.weight_decay: [0.0, 0.01, 0.02]
+    training.num_epochs: [2, 3]
+    dataset.max_length: [256, 384, 512]

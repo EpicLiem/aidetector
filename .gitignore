@@ -1,0 +1,9 @@
+.venv/
+outputs/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.log
+.raid_cache/
