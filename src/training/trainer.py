@@ -12,7 +12,13 @@ from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from src.data.raid_bench import RaidBenchConfig, load_raid_bench
 from src.models.bert_model import build_bert_classifier
-from src.training.mining import build_weighted_sampler, mine_hard_negatives
+from src.training.mining import (
+    DistributedWeightedSampler,
+    build_sample_weights,
+    build_weighted_sampler,
+    mine_hard_negatives,
+    mine_hard_negatives_distributed,
+)
 from src.utils.metrics import compute_metrics
 
 
@@ -221,11 +227,6 @@ def _train_main(
     pos_label = int(mining_cfg.get("pos_label", 1))
     mining_enabled = bool(mining_cfg.get("enabled", True))
 
-    if distributed and mining_enabled:
-        if _is_master(use_xla, xm):
-            print("Mining disabled for XLA distributed training.")
-        mining_enabled = False
-
     if _is_master(use_xla, xm):
         print(f"Starting training: epochs={num_epochs}, batch_size={batch_size}")
 
@@ -234,23 +235,85 @@ def _train_main(
             if (epoch - int(mining_cfg.get("start_epoch", 1))) % int(
                 mining_cfg.get("mine_every_epochs", 1)
             ) == 0:
-                mine_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False)
-                hard_negative_ids = mine_hard_negatives(
-                    model,
-                    mine_loader,
-                    device=device,
-                    pos_label=pos_label,
-                    top_fraction=float(mining_cfg.get("hard_negative_top_fraction", 0.1)),
+                mine_sampler = None
+                if distributed:
+                    mine_sampler = DistributedSampler(
+                        train_ds,
+                        num_replicas=world_size_eff,
+                        rank=int(rank or 0),
+                        shuffle=False,
+                    )
+                mine_loader = DataLoader(
+                    train_ds,
+                    batch_size=batch_size,
+                    shuffle=mine_sampler is None,
+                    sampler=mine_sampler,
                 )
+                if distributed and mine_sampler is not None and hasattr(mine_sampler, "set_epoch"):
+                    mine_sampler.set_epoch(epoch)
+
+                if use_xla:
+                    from torch_xla.distributed.parallel_loader import ParallelLoader
+
+                    mine_loader = ParallelLoader(mine_loader, [device]).per_device_loader(device)
+
+                mine_iter = mine_loader
+                if _is_master(use_xla, xm):
+                    mine_iter = tqdm(
+                        mine_loader,
+                        desc=f"Mining epoch {epoch}",
+                        total=len(mine_loader),
+                        unit="batch",
+                        file=sys.stdout,
+                        dynamic_ncols=True,
+                        mininterval=1.0,
+                    )
+
+                if distributed:
+                    hard_negative_ids = mine_hard_negatives_distributed(
+                        model,
+                        mine_iter,
+                        device=device,
+                        xm=xm,
+                        pos_label=pos_label,
+                        top_fraction=float(mining_cfg.get("hard_negative_top_fraction", 0.1)),
+                        tag=f"hard_negatives_epoch_{epoch}",
+                    )
+                else:
+                    hard_negative_ids = mine_hard_negatives(
+                        model,
+                        mine_iter,
+                        device=device,
+                        pos_label=pos_label,
+                        top_fraction=float(mining_cfg.get("hard_negative_top_fraction", 0.1)),
+                    )
+                if _is_master(use_xla, xm):
+                    print(f"Hard negatives mined: {len(hard_negative_ids)}")
+                    if writer is not None:
+                        writer.add_scalar("mining/hard_negative_count", len(hard_negative_ids), epoch)
 
         sampler = None
         if mining_enabled and hard_negative_ids:
-            sampler = build_weighted_sampler(
-                train_ds,
-                hard_negative_ids=hard_negative_ids,
-                hard_negative_weight=float(mining_cfg.get("hard_negative_weight", 3.0)),
-                pos_label=pos_label,
-            )
+            if distributed:
+                weights = build_sample_weights(
+                    train_ds,
+                    hard_negative_ids=hard_negative_ids,
+                    hard_negative_weight=float(mining_cfg.get("hard_negative_weight", 3.0)),
+                    pos_label=pos_label,
+                )
+                sampler = DistributedWeightedSampler(
+                    weights=weights,
+                    num_replicas=world_size_eff,
+                    rank=int(rank or 0),
+                    seed=seed,
+                )
+            else:
+                sampler = build_weighted_sampler(
+                    train_ds,
+                    hard_negative_ids=hard_negative_ids,
+                    hard_negative_weight=float(mining_cfg.get("hard_negative_weight", 3.0)),
+                    pos_label=pos_label,
+                )
         if distributed and sampler is None:
             sampler = DistributedSampler(
                 train_ds,
