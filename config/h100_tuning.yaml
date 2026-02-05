@@ -1,0 +1,37 @@
+seed: 42
+
+dataset:
+  max_length: 512
+  max_rows: 200000
+
+training:
+  device: "cuda"
+  batch_size: 16
+  num_epochs: 2
+  learning_rate: 1.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  grad_clip_norm: 1.0
+  eval_every_steps: 500
+  val_max_batches: 200
+
+mining:
+  enabled: true
+  start_epoch: 2
+  mine_every_epochs: 1
+  hard_negative_top_fraction: 0.1
+  hard_negative_weight: 3.0
+
+tuning:
+  enabled: true
+  strategy: "grid"
+  max_trials: 16
+  metric: "f1"
+  direction: "maximize"
+  output_dir: "outputs/tuning_h100"
+  seed: 42
+  params:
+    training.learning_rate: [5.0e-6, 1.0e-5, 2.0e-5]
+    training.batch_size: [8, 16, 32]
+    training.weight_decay: [0.0, 0.01, 0.02]
+    training.num_epochs: [2, 3]
