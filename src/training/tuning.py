@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List
 
 import yaml
 
-from src.training.trainer import train
+from src.training.trainer import train_entry
 
 
 def tune(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -36,7 +36,16 @@ def tune(config: Dict[str, Any]) -> Dict[str, Any]:
         trial_dir = os.path.join(output_dir, f"trial_{idx:03d}")
         trial_config.setdefault("training", {})["output_dir"] = trial_dir
 
-        metrics = train(trial_config)
+        training_cfg = trial_config.get("training", {})
+        if str(training_cfg.get("device", "auto")).lower() == "xla" and bool(
+            training_cfg.get("xla_distributed", False)
+        ):
+            raise ValueError(
+                "XLA distributed is not supported for tuning. "
+                "Set training.xla_distributed=false for tuning runs."
+            )
+
+        metrics = train_entry(trial_config)
         results.append(
             {
                 "trial": idx,

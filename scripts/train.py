@@ -6,7 +6,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.training.trainer import train
+from src.training.trainer import train_entry
 from src.utils.config import DEFAULT_CONFIG_PATH, load_config
 
 
@@ -23,7 +23,7 @@ def _parse_args():
 def main():
     args = _parse_args()
     config = load_config(args.config)
-    train(config)
+    train_entry(config)
 
 
 if __name__ == "__main__":
