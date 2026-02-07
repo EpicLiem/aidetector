@@ -17,9 +17,11 @@ dataset:
   val_seed: 42
   load_test: false
   max_rows: 200000
+  map_num_proc: 4
+  map_batch_size: 1000
 
 model:
-  pretrained_name: "microsoft/deberta-v3-large"
+  pretrained_name: "microsoft/deberta-v3-base"
   num_labels: 2
 
 training:
@@ -35,6 +37,10 @@ training:
   grad_clip_norm: 1.0
   eval_every_steps: 200
   val_max_batches: 200
+  dataloader_num_workers: 4
+  pin_memory: true
+  prefetch_factor: 2
+  persistent_workers: true
 
 mining:
   enabled: true

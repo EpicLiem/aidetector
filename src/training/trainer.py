@@ -71,6 +71,32 @@ def _resolve_device(training_cfg: Dict) -> Tuple[torch.device, str, bool]:
     return device, device_name, use_xla
 
 
+def _build_dataloader(
+    dataset,
+    batch_size: int,
+    shuffle: bool,
+    sampler,
+    training_cfg: Dict,
+    device: torch.device,
+) -> DataLoader:
+    num_workers = int(training_cfg.get("dataloader_num_workers", 0))
+    pin_memory = bool(training_cfg.get("pin_memory", device.type == "cuda"))
+    kwargs = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "sampler": sampler,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+    }
+    prefetch_factor = training_cfg.get("prefetch_factor")
+    if num_workers > 0 and prefetch_factor is not None:
+        kwargs["prefetch_factor"] = int(prefetch_factor)
+    persistent_workers = training_cfg.get("persistent_workers")
+    if num_workers > 0 and persistent_workers is not None:
+        kwargs["persistent_workers"] = bool(persistent_workers)
+    return DataLoader(dataset, **kwargs)
+
+
 def _evaluate(
     model,
     dataloader,
@@ -173,6 +199,8 @@ def _train_main(
         val_seed=int(dataset_cfg.get("val_seed", 42)),
         load_test=bool(dataset_cfg.get("load_test", False)),
         max_rows=dataset_cfg.get("max_rows"),
+        map_num_proc=dataset_cfg.get("map_num_proc"),
+        map_batch_size=dataset_cfg.get("map_batch_size"),
     )
     train_ds, val_ds, _ = load_raid_bench(raid_cfg, tokenizer=tokenizer)
     if _is_master(use_xla, xm):
@@ -243,11 +271,13 @@ def _train_main(
                         rank=int(rank or 0),
                         shuffle=False,
                     )
-                mine_loader = DataLoader(
+                mine_loader = _build_dataloader(
                     train_ds,
                     batch_size=batch_size,
                     shuffle=mine_sampler is None,
                     sampler=mine_sampler,
+                    training_cfg=training_cfg,
+                    device=device,
                 )
                 if distributed and mine_sampler is not None and hasattr(mine_sampler, "set_epoch"):
                     mine_sampler.set_epoch(epoch)
@@ -322,11 +352,13 @@ def _train_main(
                 shuffle=True,
             )
 
-        train_loader = DataLoader(
+        train_loader = _build_dataloader(
             train_ds,
             batch_size=batch_size,
             shuffle=sampler is None,
             sampler=sampler,
+            training_cfg=training_cfg,
+            device=device,
         )
         if distributed and sampler is not None and hasattr(sampler, "set_epoch"):
             sampler.set_epoch(epoch)
@@ -377,7 +409,14 @@ def _train_main(
                 and step % int(training_cfg.get("eval_every_steps", 200)) == 0
                 and val_ds is not None
             ):
-                val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+                val_loader = _build_dataloader(
+                    val_ds,
+                    batch_size=batch_size,
+                    shuffle=False,
+                    sampler=None,
+                    training_cfg=training_cfg,
+                    device=device,
+                )
                 metrics = _evaluate(
                     model,
                     val_loader,
@@ -393,7 +432,14 @@ def _train_main(
             writer.add_scalar("train/loss", avg_loss, epoch)
 
         if val_ds is not None and writer is not None:
-            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+            val_loader = _build_dataloader(
+                val_ds,
+                batch_size=batch_size,
+                shuffle=False,
+                sampler=None,
+                training_cfg=training_cfg,
+                device=device,
+            )
             metrics = _evaluate(
                 model,
                 val_loader,

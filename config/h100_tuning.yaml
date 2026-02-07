@@ -3,6 +3,8 @@ seed: 42
 dataset:
   max_length: 512
   max_rows: 200000
+  map_num_proc: 4
+  map_batch_size: 1000
 
 training:
   device: "cuda"
@@ -14,6 +16,10 @@ training:
   grad_clip_norm: 1.0
   eval_every_steps: 500
   val_max_batches: 200
+  dataloader_num_workers: 4
+  pin_memory: true
+  prefetch_factor: 2
+  persistent_workers: true
 
 mining:
   enabled: true

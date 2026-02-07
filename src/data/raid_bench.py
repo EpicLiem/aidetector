@@ -23,12 +23,26 @@ class RaidBenchConfig:
     val_seed: int = 42
     load_test: bool = False
     max_rows: Optional[int] = None
+    map_num_proc: Optional[int] = None
+    map_batch_size: Optional[int] = None
 
 
 def _get_split(dataset_dict: Any, name: str) -> Optional[Any]:
     if name in dataset_dict:
         return dataset_dict[name]
     return None
+
+
+def _map_kwargs(
+    map_num_proc: Optional[int],
+    map_batch_size: Optional[int],
+) -> dict:
+    kwargs = {}
+    if map_num_proc is not None:
+        kwargs["num_proc"] = int(map_num_proc)
+    if map_batch_size is not None:
+        kwargs["batch_size"] = int(map_batch_size)
+    return kwargs
 
 
 def _ensure_label_column(
@@ -38,24 +52,33 @@ def _ensure_label_column(
     label_from_column: Optional[str] = None,
     positive_values: Optional[list] = None,
     negative_values: Optional[list] = None,
+    map_num_proc: Optional[int] = None,
+    map_batch_size: Optional[int] = None,
 ) -> Any:
     if label_from_column and label_from_column in dataset.column_names:
         pos_set = set(positive_values or [])
         neg_set = set(negative_values or [])
 
-        def map_label(example):
-            value = example[label_from_column]
-            if value in pos_set:
-                return {"label": 1}
-            if value in neg_set:
-                return {"label": 0}
-            if not require_label:
-                return {"label": -1}
-            raise ValueError(
-                f"Unmapped label value '{value}' in column '{label_from_column}'."
-            )
+        def map_label(batch):
+            labels = []
+            for value in batch[label_from_column]:
+                if value in pos_set:
+                    labels.append(1)
+                elif value in neg_set:
+                    labels.append(0)
+                elif not require_label:
+                    labels.append(-1)
+                else:
+                    raise ValueError(
+                        f"Unmapped label value '{value}' in column '{label_from_column}'."
+                    )
+            return {"label": labels}
 
-        dataset = dataset.map(map_label)
+        dataset = dataset.map(
+            map_label,
+            batched=True,
+            **_map_kwargs(map_num_proc, map_batch_size),
+        )
         if dataset.features["label"].dtype == "string":
             dataset = dataset.class_encode_column("label")
         return dataset
@@ -65,19 +88,26 @@ def _ensure_label_column(
             pos_set = set(positive_values or [])
             neg_set = set(negative_values or [])
 
-            def map_label(example):
-                value = example[label_from_column]
-                if value in pos_set:
-                    return {"label": 1}
-                if value in neg_set:
-                    return {"label": 0}
-                if not require_label:
-                    return {"label": -1}
-                raise ValueError(
-                    f"Unmapped label value '{value}' in column '{label_from_column}'."
-                )
+            def map_label(batch):
+                labels = []
+                for value in batch[label_from_column]:
+                    if value in pos_set:
+                        labels.append(1)
+                    elif value in neg_set:
+                        labels.append(0)
+                    elif not require_label:
+                        labels.append(-1)
+                    else:
+                        raise ValueError(
+                            f"Unmapped label value '{value}' in column '{label_from_column}'."
+                        )
+                return {"label": labels}
 
-            dataset = dataset.map(map_label)
+            dataset = dataset.map(
+                map_label,
+                batched=True,
+                **_map_kwargs(map_num_proc, map_batch_size),
+            )
             return dataset
         if not require_label:
             dataset = dataset.add_column("label", [-1] * len(dataset))
@@ -93,11 +123,20 @@ def _ensure_label_column(
     return dataset
 
 
-def _add_index_column(dataset: Any) -> Any:
-    def add_index(_, idx):
-        return {"idx": idx}
+def _add_index_column(
+    dataset: Any,
+    map_num_proc: Optional[int] = None,
+    map_batch_size: Optional[int] = None,
+) -> Any:
+    def add_index(_, indices):
+        return {"idx": indices}
 
-    return dataset.map(add_index, with_indices=True)
+    return dataset.map(
+        add_index,
+        with_indices=True,
+        batched=True,
+        **_map_kwargs(map_num_proc, map_batch_size),
+    )
 
 
 def _tokenize_dataset(
@@ -105,6 +144,8 @@ def _tokenize_dataset(
     tokenizer,
     text_column: str,
     max_length: int,
+    map_num_proc: Optional[int] = None,
+    map_batch_size: Optional[int] = None,
 ) -> Any:
     if text_column not in dataset.column_names:
         raise ValueError(f"Text column '{text_column}' not found in dataset.")
@@ -117,7 +158,11 @@ def _tokenize_dataset(
             max_length=max_length,
         )
 
-    dataset = dataset.map(tokenize_batch, batched=True)
+    dataset = dataset.map(
+        tokenize_batch,
+        batched=True,
+        **_map_kwargs(map_num_proc, map_batch_size),
+    )
     keep_columns = {"input_ids", "attention_mask", "label", "idx"}
     if "token_type_ids" in dataset.column_names:
         keep_columns.add("token_type_ids")
@@ -190,9 +235,22 @@ def load_raid_bench(
         label_from_column=cfg.label_from_column,
         positive_values=cfg.positive_values,
         negative_values=cfg.negative_values,
+        map_num_proc=cfg.map_num_proc,
+        map_batch_size=cfg.map_batch_size,
     )
-    train = _add_index_column(train)
-    train = _tokenize_dataset(train, tokenizer, cfg.text_column, cfg.max_length)
+    train = _add_index_column(
+        train,
+        map_num_proc=cfg.map_num_proc,
+        map_batch_size=cfg.map_batch_size,
+    )
+    train = _tokenize_dataset(
+        train,
+        tokenizer,
+        cfg.text_column,
+        cfg.max_length,
+        map_num_proc=cfg.map_num_proc,
+        map_batch_size=cfg.map_batch_size,
+    )
 
     if val is not None:
         val = _ensure_label_column(
@@ -202,9 +260,22 @@ def load_raid_bench(
             label_from_column=cfg.label_from_column,
             positive_values=cfg.positive_values,
             negative_values=cfg.negative_values,
+            map_num_proc=cfg.map_num_proc,
+            map_batch_size=cfg.map_batch_size,
         )
-        val = _add_index_column(val)
-        val = _tokenize_dataset(val, tokenizer, cfg.text_column, cfg.max_length)
+        val = _add_index_column(
+            val,
+            map_num_proc=cfg.map_num_proc,
+            map_batch_size=cfg.map_batch_size,
+        )
+        val = _tokenize_dataset(
+            val,
+            tokenizer,
+            cfg.text_column,
+            cfg.max_length,
+            map_num_proc=cfg.map_num_proc,
+            map_batch_size=cfg.map_batch_size,
+        )
 
     if test is not None:
         test = _ensure_label_column(
@@ -214,9 +285,22 @@ def load_raid_bench(
             label_from_column=cfg.label_from_column,
             positive_values=cfg.positive_values,
             negative_values=cfg.negative_values,
+            map_num_proc=cfg.map_num_proc,
+            map_batch_size=cfg.map_batch_size,
         )
-        test = _add_index_column(test)
-        test = _tokenize_dataset(test, tokenizer, cfg.text_column, cfg.max_length)
+        test = _add_index_column(
+            test,
+            map_num_proc=cfg.map_num_proc,
+            map_batch_size=cfg.map_batch_size,
+        )
+        test = _tokenize_dataset(
+            test,
+            tokenizer,
+            cfg.text_column,
+            cfg.max_length,
+            map_num_proc=cfg.map_num_proc,
+            map_batch_size=cfg.map_batch_size,
+        )
 
     return train, val, test
 
